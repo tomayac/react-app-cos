@@ -4,7 +4,12 @@ import cosPlugin from './vite-plugin-cos';
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), cosPlugin()],
+  plugins: [
+    react(),
+    cosPlugin({
+      include: ['**/vendor-react*']
+    })
+  ],
   build: {
     rollupOptions: {
       output: {

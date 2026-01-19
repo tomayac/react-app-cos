@@ -2,19 +2,36 @@ import type { Plugin } from 'vite';
 import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { createFilter } from '@rollup/pluginutils';
 
-export default function cosPlugin(): Plugin {
-  let config: any;
+export interface CosPluginOptions {
+  /**
+   * Pattern to include chunks to be managed by COS.
+   * Matches against the output filename (e.g. `assets/vendor-*.js`).
+   * Default: `['**\/*']` (all chunks, except the entry implementation detail)
+   */
+  include?: string | RegExp | (string | RegExp)[];
+
+  /**
+   * Pattern to exclude chunks from being managed by COS.
+   */
+  exclude?: string | RegExp | (string | RegExp)[];
+}
+
+export default function cosPlugin(options: CosPluginOptions = {}): Plugin {
+  const filter = createFilter(options.include || ['**/*'], options.exclude);
+
+  // Resolve loader path relative to this file
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+  const loaderPath = path.resolve(__dirname, 'loader.js');
 
   return {
     name: 'vite-plugin-cos',
     apply: 'build',
+    enforce: 'post',
 
-    enforce: 'post', // Ensure we run after other plugins (like HTML)
 
-    configResolved(resolvedConfig) {
-      config = resolvedConfig;
-    },
 
     transformIndexHtml: {
       order: 'post',
@@ -38,7 +55,10 @@ export default function cosPlugin(): Plugin {
           if (chunk.isEntry) {
             mainChunk = chunk;
           } else {
-            managedChunks[fileName] = chunk;
+            // Apply filter to determine if this chunk should be managed by COS
+            if (filter(fileName)) {
+              managedChunks[fileName] = chunk;
+            }
           }
         }
         if (fileName === 'index.html' && chunk.type === 'asset') {
@@ -63,7 +83,8 @@ export default function cosPlugin(): Plugin {
         }
 
         // Rewrite imports in ALL chunks (both main entry and managed chunks)
-        // to support dependencies between chunks (e.g., react-dom importing react)
+        // This ensures dependencies between managed chunks and from entry to managed chunks are handled.
+        // We do NOT rewrite imports to chunks that are NOT in the manifest (unmanaged chunks).
         const allChunks = [mainChunk, ...Object.values(managedChunks)];
 
         for (const targetChunk of allChunks) {
@@ -72,9 +93,10 @@ export default function cosPlugin(): Plugin {
             if (targetChunk.fileName === fileName) continue;
 
             const { globalVar } = manifest[fileName];
-            // Use basename for matching relative imports within the same directory (which is effective for dist/assets)
+            // Use basename for matching relative imports
             const chunkBasename = fileName.split('/').pop()!;
             const escapedName = chunkBasename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            // Regex to find static imports of the managed chunk
             const pattern = `import\\s*\\{([^}]+)\\}\\s*from\\s*['"]\\.\\/${escapedName}['"];?`;
             const importRegex = new RegExp(pattern, 'g');
 
@@ -96,24 +118,26 @@ export default function cosPlugin(): Plugin {
 
         // Inject loader and inlined manifest into index.html
         if (htmlAsset) {
-          const loaderPath = path.resolve(config.root, 'src/cos-loader.js');
-          let loaderCode = fs.readFileSync(loaderPath, 'utf-8');
+          try {
+            let loaderCode = fs.readFileSync(loaderPath, 'utf-8');
+            loaderCode = loaderCode.replace('__COS_MANIFEST__', JSON.stringify(manifest));
 
-          loaderCode = loaderCode.replace('__COS_MANIFEST__', JSON.stringify(manifest));
+            let htmlSource = htmlAsset.source as string;
 
-          let htmlSource = htmlAsset.source as string;
+            // Remove modulepreload links to avoid double fetching keys we manage
+            htmlSource = htmlSource.replace(
+              /<link\s+[^>]*rel=["']modulepreload["'][^>]*>/gi,
+              '<!-- modulepreload disabled by COS Plugin -->'
+            );
 
-          // Remove modulepreload links to avoid double fetching keys we manage
-          htmlSource = htmlSource.replace(
-            /<link\s+[^>]*rel=["']modulepreload["'][^>]*>/gi,
-            '<!-- modulepreload disabled by COS Plugin -->'
-          );
-
-          // Inject into head
-          htmlAsset.source = htmlSource.replace(
-            '<head>',
-            () => `<head>\n<script id="cos-loader">${loaderCode}</script>`
-          );
+            // Inject into head
+            htmlAsset.source = htmlSource.replace(
+              '<head>',
+              () => `<head>\n<script id="cos-loader">${loaderCode}</script>`
+            );
+          } catch (e) {
+            console.error('COS Plugin: Failed to read loader.js', e);
+          }
         }
       }
     }

@@ -26,6 +26,6 @@
   },
   "include": [
     "vite.config.ts",
-    "vite-plugin-cos.ts"
+    "vite-plugin-cos/index.ts"
   ]
 }
