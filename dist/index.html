@@ -9,15 +9,16 @@
 
   // Manifest is injected by the Vite plugin
   // @ts-ignore
-  const manifest = {"vendor-react":{"file":"/assets/vendor-react-BjeeCjb0.js","hash":"01128e48b6bb4d9a8bfba30e51dfcd1b078ba32641ef529607195b6ffa120c04","globalVar":"__COS_VENDOR_01128e48__"},"index":{"file":"/assets/index-zDjrlY3C.js"}};
+  const manifest = {"assets/vendor-react-CLvCoLnL.js":{"file":"/assets/vendor-react-CLvCoLnL.js","hash":"54fa482a58ea9cc1e82b1bcfb7c3e282161ed7809e000cdf345f3ea79e7ba7a8","globalVar":"__COS_CHUNK_54fa482a__"},"assets/vendor-react-dom-YfExALDx.js":{"file":"/assets/vendor-react-dom-YfExALDx.js","hash":"a5cb2cf6deb7caa864028e305b49d10186e4b9b55bba2c6cc46a5c6c94486a2c","globalVar":"__COS_CHUNK_a5cb2cf6__"},"index":{"file":"/assets/index-BCDbrmM_.js"}};
 
-  const vendorEntry = manifest ? manifest['vendor-react'] : null;
-  const mainEntry = manifest ? manifest['index'] : null;
-
-  if (!vendorEntry || !mainEntry) {
-    console.warn('COS Loader: Missing entries in manifest.');
+  const mainEntry = manifest && manifest['index'];
+  if (!mainEntry) {
+    console.warn('COS Loader: Missing main entry in manifest.');
     return;
   }
+
+  // Identify managed chunks (anything with a hash)
+  const chunksToLoad = Object.values(manifest).filter(item => item.hash);
 
   async function getBlobFromCOS(hash) {
     if (!isCOSAvailable) return null;
@@ -52,41 +53,44 @@
     }
   }
 
-  // Load Vendor Logic
-  let vendorUrl = null;
+  // Load all managed chunks in parallel
+  // If COS is not available, we skip this and fall back to native network loading via the import() rewrites.
+  if (isCOSAvailable && chunksToLoad.length > 0) {
+    await Promise.all(chunksToLoad.map(async (chunk) => {
+      let url = null;
 
-  if (isCOSAvailable && vendorEntry.hash) {
-    const cosBlob = await getBlobFromCOS(vendorEntry.hash);
-    if (cosBlob) {
-      console.log('COS Loader: Loaded vendor from COS!');
-      // Enforce MIME type
-      const jsBlob = new Blob([cosBlob], { type: 'application/javascript' });
-      vendorUrl = URL.createObjectURL(jsBlob);
-    } else {
-      console.log('COS Loader: Vendor not in COS, fetching from network...');
-      try {
-        const response = await fetch(vendorEntry.file);
-        const blob = await response.blob();
-        // Enforce MIME type
-        const jsBlob = new Blob([blob], { type: 'application/javascript' });
-        vendorUrl = URL.createObjectURL(jsBlob);
-        // Fire and forget storage
-        storeBlobInCOS(blob, vendorEntry.hash);
-      } catch (e) {
-        console.error('COS Loader: Network fetch failed for vendor', e);
+      const cosBlob = await getBlobFromCOS(chunk.hash);
+      if (cosBlob) {
+        console.log(`COS Loader: Loaded ${chunk.file} from COS!`);
+        url = URL.createObjectURL(new Blob([cosBlob], { type: 'application/javascript' }));
+      } else {
+        console.log(`COS Loader: ${chunk.file} not in COS, fetching...`);
+        try {
+          const response = await fetch(chunk.file);
+          if (response.ok) {
+            const blob = await response.blob();
+            url = URL.createObjectURL(new Blob([blob], { type: 'application/javascript' }));
+            // Store in COS for next time
+            storeBlobInCOS(blob, chunk.hash);
+          } else {
+            console.error(`COS Loader: Fetch failed with status ${response.status}`);
+          }
+        } catch (e) {
+          console.error(`COS Loader: Network fetch failed for ${chunk.file}`, e);
+        }
       }
-    }
+
+      // Set global variable if we have a URL
+      if (url && chunk.globalVar) {
+        window[chunk.globalVar] = url;
+      }
+    }));
   }
 
-  // Pass URL to the main entry via global variable
-  if (vendorUrl && vendorEntry.globalVar) {
-    window[vendorEntry.globalVar] = vendorUrl;
-  }
-
-  // Load Main Entry
+  // Start App
   try {
+    console.log('COS Loader: Starting app...');
     await import(mainEntry.file);
-    console.log('COS Loader: App started');
   } catch (err) {
     console.error('COS Loader: Failed to start app', err);
   }
@@ -97,6 +101,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>react-app</title>
     <!-- Entry script disabled by COS Plugin -->
+    <!-- modulepreload disabled by COS Plugin -->
     <!-- modulepreload disabled by COS Plugin -->
     <link rel="stylesheet" crossorigin href="/assets/index-COcDBgFa.css">
   </head>

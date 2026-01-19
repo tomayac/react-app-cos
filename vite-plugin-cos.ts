@@ -28,50 +28,70 @@ export default function cosPlugin(): Plugin {
     },
 
     async generateBundle(_options, bundle) {
-      let vendorChunk: any = null;
+      const managedChunks: Record<string, any> = {};
       let mainChunk: any = null;
       let htmlAsset: any = null;
 
       for (const fileName in bundle) {
         const chunk = bundle[fileName];
         if (chunk.type === 'chunk') {
-          if (chunk.name === 'vendor-react') vendorChunk = chunk;
-          if (chunk.isEntry) mainChunk = chunk;
+          if (chunk.isEntry) {
+            mainChunk = chunk;
+          } else {
+            managedChunks[fileName] = chunk;
+          }
         }
         if (fileName === 'index.html' && chunk.type === 'asset') {
           htmlAsset = chunk;
         }
       }
 
-      if (vendorChunk && mainChunk) {
-        const hash = crypto.createHash('sha256').update(vendorChunk.code).digest('hex');
-        const vendorFileName = vendorChunk.fileName.split('/').pop();
-        const escapedVendorName = vendorFileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        // Match import { ... } from "./vendor..."
-        const importRegex = new RegExp(`import\\s*\\{([^}]+)\\}\\s*from\\s*['"]\\.\\/${escapedVendorName}['"];?`, 'g');
-        const globalVarName = `__COS_VENDOR_${hash.substring(0, 8)}__`;
+      if (Object.keys(managedChunks).length > 0 && mainChunk) {
+        const manifest: Record<string, any> = {};
 
-        // Rewrite static imports to dynamic imports using a global variable
-        if (importRegex.test(mainChunk.code)) {
-          mainChunk.code = mainChunk.code.replace(importRegex, (_match: string, bindings: string) => {
-            const destructuringPattern = bindings.split(',').map(b => {
-              const parts = b.trim().split(/\s+as\s+/);
-              return parts.length === 2 ? `${parts[0]}:${parts[1]}` : parts[0];
-            }).join(',');
-            // IMPORTANT: "window" prefix is vital for the global variable fallback
-            return `const {${destructuringPattern}}=await import(window.${globalVarName}||"./${vendorFileName}");`;
-          });
-        }
+        // Generate hashes and global variables for managed chunks
+        for (const fileName in managedChunks) {
+          const chunk = managedChunks[fileName];
+          const hash = crypto.createHash('sha256').update(chunk.code).digest('hex');
+          const globalVarName = `__COS_CHUNK_${hash.substring(0, 8)}__`;
 
-        const manifest = {
-          'vendor-react': {
-            file: `/${vendorChunk.fileName}`,
+          manifest[fileName] = {
+            file: `/${fileName}`,
             hash: hash,
             globalVar: globalVarName
-          },
-          'index': {
-            file: `/${mainChunk.fileName}`
+          };
+        }
+
+        // Rewrite imports in ALL chunks (both main entry and managed chunks)
+        // to support dependencies between chunks (e.g., react-dom importing react)
+        const allChunks = [mainChunk, ...Object.values(managedChunks)];
+
+        for (const targetChunk of allChunks) {
+          for (const fileName in manifest) {
+            // Avoid self-reference
+            if (targetChunk.fileName === fileName) continue;
+
+            const { globalVar } = manifest[fileName];
+            // Use basename for matching relative imports within the same directory (which is effective for dist/assets)
+            const chunkBasename = fileName.split('/').pop()!;
+            const escapedName = chunkBasename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const pattern = `import\\s*\\{([^}]+)\\}\\s*from\\s*['"]\\.\\/${escapedName}['"];?`;
+            const importRegex = new RegExp(pattern, 'g');
+
+            if (importRegex.test(targetChunk.code)) {
+              targetChunk.code = targetChunk.code.replace(importRegex, (_match: string, bindings: string) => {
+                const destructuringPattern = bindings.split(',').map(b => {
+                  const parts = b.trim().split(/\s+as\s+/);
+                  return parts.length === 2 ? `${parts[0]}:${parts[1]}` : parts[0];
+                }).join(',');
+                return `const {${destructuringPattern}}=await import(window.${globalVar}||"./${fileName}");`;
+              });
+            }
           }
+        }
+
+        manifest['index'] = {
+          file: `/${mainChunk.fileName}`
         };
 
         // Inject loader and inlined manifest into index.html

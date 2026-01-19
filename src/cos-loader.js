@@ -8,13 +8,14 @@
   // @ts-ignore
   const manifest = __COS_MANIFEST__;
 
-  const vendorEntry = manifest ? manifest['vendor-react'] : null;
-  const mainEntry = manifest ? manifest['index'] : null;
-
-  if (!vendorEntry || !mainEntry) {
-    console.warn('COS Loader: Missing entries in manifest.');
+  const mainEntry = manifest && manifest['index'];
+  if (!mainEntry) {
+    console.warn('COS Loader: Missing main entry in manifest.');
     return;
   }
+
+  // Identify managed chunks (anything with a hash)
+  const chunksToLoad = Object.values(manifest).filter(item => item.hash);
 
   async function getBlobFromCOS(hash) {
     if (!isCOSAvailable) return null;
@@ -49,41 +50,44 @@
     }
   }
 
-  // Load Vendor Logic
-  let vendorUrl = null;
+  // Load all managed chunks in parallel
+  // If COS is not available, we skip this and fall back to native network loading via the import() rewrites.
+  if (isCOSAvailable && chunksToLoad.length > 0) {
+    await Promise.all(chunksToLoad.map(async (chunk) => {
+      let url = null;
 
-  if (isCOSAvailable && vendorEntry.hash) {
-    const cosBlob = await getBlobFromCOS(vendorEntry.hash);
-    if (cosBlob) {
-      console.log('COS Loader: Loaded vendor from COS!');
-      // Enforce MIME type
-      const jsBlob = new Blob([cosBlob], { type: 'application/javascript' });
-      vendorUrl = URL.createObjectURL(jsBlob);
-    } else {
-      console.log('COS Loader: Vendor not in COS, fetching from network...');
-      try {
-        const response = await fetch(vendorEntry.file);
-        const blob = await response.blob();
-        // Enforce MIME type
-        const jsBlob = new Blob([blob], { type: 'application/javascript' });
-        vendorUrl = URL.createObjectURL(jsBlob);
-        // Fire and forget storage
-        storeBlobInCOS(blob, vendorEntry.hash);
-      } catch (e) {
-        console.error('COS Loader: Network fetch failed for vendor', e);
+      const cosBlob = await getBlobFromCOS(chunk.hash);
+      if (cosBlob) {
+        console.log(`COS Loader: Loaded ${chunk.file} from COS!`);
+        url = URL.createObjectURL(new Blob([cosBlob], { type: 'application/javascript' }));
+      } else {
+        console.log(`COS Loader: ${chunk.file} not in COS, fetching...`);
+        try {
+          const response = await fetch(chunk.file);
+          if (response.ok) {
+            const blob = await response.blob();
+            url = URL.createObjectURL(new Blob([blob], { type: 'application/javascript' }));
+            // Store in COS for next time
+            storeBlobInCOS(blob, chunk.hash);
+          } else {
+            console.error(`COS Loader: Fetch failed with status ${response.status}`);
+          }
+        } catch (e) {
+          console.error(`COS Loader: Network fetch failed for ${chunk.file}`, e);
+        }
       }
-    }
+
+      // Set global variable if we have a URL
+      if (url && chunk.globalVar) {
+        window[chunk.globalVar] = url;
+      }
+    }));
   }
 
-  // Pass URL to the main entry via global variable
-  if (vendorUrl && vendorEntry.globalVar) {
-    window[vendorEntry.globalVar] = vendorUrl;
-  }
-
-  // Load Main Entry
+  // Start App
   try {
+    console.log('COS Loader: Starting app...');
     await import(mainEntry.file);
-    console.log('COS Loader: App started');
   } catch (err) {
     console.error('COS Loader: Failed to start app', err);
   }
