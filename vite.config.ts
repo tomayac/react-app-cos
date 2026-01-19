@@ -7,7 +7,8 @@ export default defineConfig({
   plugins: [
     react(),
     cosPlugin({
-      include: ['**/vendor-react*']
+      include: ['**/vendor-react*'],
+      exclude: ['**/vendor-react-dom*']
     })
   ],
   build: {
