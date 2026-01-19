@@ -1,15 +1,14 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import cosPlugin from './vite-plugin-cos';
+import cosPlugin from 'vite-plugin-cross-origin-storage';
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
     cosPlugin({
-      include: ['**/vendor-react*'],
-      exclude: ['**/vendor-react-dom*']
-    })
+      include: ['**/vendor-react-dom*'],
+    }) as any
   ],
   build: {
     rollupOptions: {

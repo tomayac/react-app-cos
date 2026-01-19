@@ -25,7 +25,6 @@
     "noUncheckedSideEffectImports": true
   },
   "include": [
-    "vite.config.ts",
-    "vite-plugin-cos/index.ts"
+    "vite.config.ts"
   ]
 }
