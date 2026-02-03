@@ -12,6 +12,7 @@ export default defineConfig({
     }) as any
   ],
   build: {
+    outDir: 'docs',
     rollupOptions: {
       output: {
         manualChunks(id) {
