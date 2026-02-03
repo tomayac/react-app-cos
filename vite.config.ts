@@ -4,6 +4,7 @@ import cosPlugin from 'vite-plugin-cross-origin-storage';
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/react-app-cos/',
   plugins: [
     react(),
     cosPlugin({
