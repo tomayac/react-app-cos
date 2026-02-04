@@ -9,7 +9,7 @@
 
   // Manifest is injected by the Vite plugin
   // @ts-ignore
-  const manifest = {"assets/vendor-react-dom-CNmDVL3y.js":{"file":"/react-app-cos/assets/vendor-react-dom-CNmDVL3y.js","hash":"34c6002193ad94c1274dc412f3f766b884ff6a35734acb6a0a722fc79d54b78e","globalVar":"__COS_CHUNK_bf1aa929__"},"index":{"file":"/react-app-cos/assets/index-CFKKUbS1.js"}};
+  const manifest = {"assets/vendor-react-dom-CNmDVL3y.js":{"fileName":"assets/vendor-react-dom-CNmDVL3y.js","file":"/react-app-cos/assets/vendor-react-dom-CNmDVL3y.js","hash":"071444e240522d36b4b875e4535519f7e96ffcd396d65cc1f0ebde7ff0413203","globalVar":"__COS_CHUNK_bf1aa929__","hasDefault":false},"index":{"file":"/react-app-cos/assets/index-CFKKUbS1.js"}};
 
   const mainEntry = manifest && manifest['index'];
   if (!mainEntry) {
@@ -54,8 +54,19 @@
   }
 
   // Load all managed chunks in parallel
-  // If COS is not available, we skip this and fall back to native network loading via the import() rewrites.
-  if (isCOSAvailable && chunksToLoad.length > 0) {
+  if (chunksToLoad.length > 0) {
+    const importMap = { imports: {} };
+
+    // Prefix mapping: Handles all unmanaged chunks automatically.
+    // Longest prefix wins in Import Maps, so specific managed entries below take precedence.
+    // We assume all chunks are in the same relative directory as the managed ones.
+    const firstChunk = chunksToLoad[0];
+    const assetsDir = firstChunk.fileName.substring(0, firstChunk.fileName.lastIndexOf('/') + 1);
+    const assetsUrl = firstChunk.file.substring(0, firstChunk.file.lastIndexOf('/') + 1);
+    if (assetsDir && assetsUrl) {
+      importMap.imports[assetsDir] = assetsUrl;
+    }
+
     await Promise.all(chunksToLoad.map(async (chunk) => {
       let url = null;
 
@@ -80,11 +91,26 @@
         }
       }
 
-      // Set global variable if we have a URL
-      if (url && chunk.globalVar) {
-        window[chunk.globalVar] = url;
+      if (url) {
+        // Map the bare specifier and absolute path directly to the Blob URL.
+        // This avoids the indirection of a Data URL shim and handles cycles naturally.
+        importMap.imports[chunk.fileName] = url;
+        importMap.imports[chunk.file] = url;
+
+        // Also set global if anyone still needs it (legacy)
+        if (chunk.globalVar) {
+          window[chunk.globalVar] = url;
+        }
       }
     }));
+
+    // Inject the importmap
+    if (Object.keys(importMap.imports).length > 0) {
+      const imScript = document.createElement('script');
+      imScript.type = 'importmap';
+      imScript.textContent = JSON.stringify(importMap);
+      document.head.appendChild(imScript);
+    }
   }
 
   // Start App
