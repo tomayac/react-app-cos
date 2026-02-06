@@ -2,23 +2,37 @@
 <html lang="en">
   <head>
 <script id="cos-loader">(async function () {
-  await new Promise(resolve => setTimeout(resolve, 100));
-
   const isCOSAvailable = 'crossOriginStorage' in navigator;
   console.log('COS Loader: isCOSAvailable =', isCOSAvailable);
 
   // Manifest is injected by the Vite plugin
   // @ts-ignore
-  const manifest = {"assets/vendor-react-dom-CNmDVL3y.js":{"fileName":"assets/vendor-react-dom-CNmDVL3y.js","file":"/react-app-cos/assets/vendor-react-dom-CNmDVL3y.js","hash":"071444e240522d36b4b875e4535519f7e96ffcd396d65cc1f0ebde7ff0413203","globalVar":"__COS_CHUNK_bf1aa929__","hasDefault":false},"index":{"file":"/react-app-cos/assets/index-CFKKUbS1.js"}};
+  const manifest = {
+  "base": "/react-app-cos/",
+  "entry": "assets/index-CFKKUbS1.js",
+  "chunks": {
+    "assets/vendor-react-dom-CNmDVL3y.js": "a4a49651b98295fb380cb4825f14769a879c9dc7f694fdf45d9904ab4ce7b8c3"
+  },
+  "unmanaged": [
+    "assets/vendor-react-DKHFF0Td.js",
+    "assets/index-CFKKUbS1.js"
+  ]
+};
 
-  const mainEntry = manifest && manifest['index'];
+  const { base, entry, chunks } = manifest;
+  const mainEntry = entry;
+
   if (!mainEntry) {
-    console.warn('COS Loader: Missing main entry in manifest.');
+    console.warn('COS Loader: Missing entry in manifest.');
     return;
   }
 
-  // Identify managed chunks (anything with a hash)
-  const chunksToLoad = Object.values(manifest).filter(item => item.hash);
+  // Identify managed chunks
+  const chunksToLoad = Object.entries(chunks || {}).map(([fileName, hash]) => ({
+    fileName,
+    hash,
+    file: `${base}${fileName}`,
+  }));
 
   async function getBlobFromCOS(hash) {
     if (!isCOSAvailable) return null;
@@ -30,7 +44,8 @@
         return await handles[0].getFile();
       }
     } catch (err) {
-      if (err.name !== 'NotFoundError') console.error('COS Loader: Error checking COS', err);
+      if (err.name !== 'NotFoundError')
+        console.error('COS Loader: Error checking COS', err);
     }
     return null;
   }
@@ -46,77 +61,78 @@
         const writable = await handles[0].createWritable();
         await writable.write(blob);
         await writable.close();
-        console.log('COS Loader: Stored bundle in COS', hash);
+        console.log('COS Loader: Stored chunk in COS', hash);
       }
     } catch (err) {
       console.error('COS Loader: Failed to store in COS', err);
     }
   }
 
-  // Load all managed chunks in parallel
-  if (chunksToLoad.length > 0) {
-    const importMap = { imports: {} };
-
-    // Prefix mapping: Handles all unmanaged chunks automatically.
-    // Longest prefix wins in Import Maps, so specific managed entries below take precedence.
-    // We assume all chunks are in the same relative directory as the managed ones.
-    const firstChunk = chunksToLoad[0];
-    const assetsDir = firstChunk.fileName.substring(0, firstChunk.fileName.lastIndexOf('/') + 1);
-    const assetsUrl = firstChunk.file.substring(0, firstChunk.file.lastIndexOf('/') + 1);
-    if (assetsDir && assetsUrl) {
-      importMap.imports[assetsDir] = assetsUrl;
+  async function getChunkDataUrl(chunk) {
+    let blob = await getBlobFromCOS(chunk.hash);
+    if (blob) {
+      console.log(`COS Loader: ${chunk.fileName} found in COS`);
+      blob = new Blob([blob], { type: 'text/javascript' });
+    }
+    if (!blob) {
+      console.log(`COS Loader: ${chunk.file} not in COS, fetching...`);
+      try {
+        const resp = await fetch(chunk.file);
+        if (!resp.ok) throw new Error(`Status ${resp.status}`);
+        const rawBlob = await resp.blob();
+        blob = new Blob([rawBlob], { type: 'text/javascript' });
+        await storeBlobInCOS(blob, chunk.hash);
+      } catch (e) {
+        console.error(`COS Loader: Failed to fetch ${chunk.file}`, e);
+        return null;
+      }
     }
 
-    await Promise.all(chunksToLoad.map(async (chunk) => {
-      let url = null;
-
-      const cosBlob = await getBlobFromCOS(chunk.hash);
-      if (cosBlob) {
-        console.log(`COS Loader: Loaded ${chunk.file} from COS!`);
-        url = URL.createObjectURL(new Blob([cosBlob], { type: 'application/javascript' }));
-      } else {
-        console.log(`COS Loader: ${chunk.file} not in COS, fetching...`);
-        try {
-          const response = await fetch(chunk.file);
-          if (response.ok) {
-            const blob = await response.blob();
-            url = URL.createObjectURL(new Blob([blob], { type: 'application/javascript' }));
-            // Store in COS for next time
-            storeBlobInCOS(blob, chunk.hash);
-          } else {
-            console.error(`COS Loader: Fetch failed with status ${response.status}`);
-          }
-        } catch (e) {
-          console.error(`COS Loader: Network fetch failed for ${chunk.file}`, e);
-        }
-      }
-
-      if (url) {
-        // Map the bare specifier and absolute path directly to the Blob URL.
-        // This avoids the indirection of a Data URL shim and handles cycles naturally.
-        importMap.imports[chunk.fileName] = url;
-        importMap.imports[chunk.file] = url;
-
-        // Also set global if anyone still needs it (legacy)
-        if (chunk.globalVar) {
-          window[chunk.globalVar] = url;
-        }
-      }
-    }));
-
-    // Inject the importmap
-    if (Object.keys(importMap.imports).length > 0) {
-      const imScript = document.createElement('script');
-      imScript.type = 'importmap';
-      imScript.textContent = JSON.stringify(importMap);
-      document.head.appendChild(imScript);
-    }
+    // Convert blob to Data URL
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
   }
 
-  // Start App
+  // Initialize
   try {
     console.log('COS Loader: Starting app...');
-    await import(mainEntry.file);
+
+    // Resolve all chunks to Data URLs
+    const importMap = { imports: {} };
+
+    // Set up unmanaged dependencies correctly so Data URLs can resolve them.
+    for (const fileName of manifest.unmanaged || []) {
+      const bareSpecifier = `coschunk-${fileName.replace(/\//g, '-')}`;
+      importMap.imports[bareSpecifier] = window.location.origin + base + fileName;
+    }
+
+    console.log(`COS Loader: Loading ${chunksToLoad.length} chunks...`);
+    const loadPromises = chunksToLoad.map(async (chunk) => {
+      const dataUrl = await getChunkDataUrl(chunk);
+      if (dataUrl) {
+        // Use a hyphenated prefix and replace all slashes to ensure it's treated
+        // as a truly bare specifier, bypassing hierarchical/protocol checks.
+        const bareSpecifier = `coschunk-${chunk.fileName.replace(/\//g, '-')}`;
+        importMap.imports[bareSpecifier] = dataUrl;
+      }
+    });
+
+    await Promise.all(loadPromises);
+
+    // Inject Import Map
+    const script = document.createElement('script');
+    script.type = 'importmap';
+    script.textContent = JSON.stringify(importMap, null, 2);
+    document.head.appendChild(script);
+
+    console.log('COS Loader: Import Map injected');
+
+    // Import the main entry.
+    const entryUrl = `${base}${mainEntry}`;
+    await import(entryUrl);
   } catch (err) {
     console.error('COS Loader: Failed to start app', err);
   }
