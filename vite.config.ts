@@ -14,6 +14,7 @@ export default defineConfig({
   build: {
     outDir: 'docs',
     sourcemap: true,
+    assetsInlineLimit: 0,
     rollupOptions: {
       output: {
         manualChunks(id) {
