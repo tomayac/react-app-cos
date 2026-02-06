@@ -9,13 +9,13 @@
   // @ts-ignore
   const manifest = {
   "base": "/react-app-cos/",
-  "entry": "assets/index-CFKKUbS1.js",
+  "entry": "assets/index-tKp3ko7z.js",
   "chunks": {
-    "assets/vendor-react-dom-CNmDVL3y.js": "a4a49651b98295fb380cb4825f14769a879c9dc7f694fdf45d9904ab4ce7b8c3"
+    "assets/vendor-react-dom-k6GPEFFc.js": "dae4c66d07b17d77bec952ebc0f2d5c47cf09e7076fc9eb5b9d194f7be1e5b98"
   },
   "unmanaged": [
-    "assets/vendor-react-DKHFF0Td.js",
-    "assets/index-CFKKUbS1.js"
+    "assets/vendor-react-Bwdk87AJ.js",
+    "assets/index-tKp3ko7z.js"
   ]
 };
 
@@ -68,7 +68,7 @@
     }
   }
 
-  async function getChunkDataUrl(chunk) {
+  async function getChunkBlobUrl(chunk) {
     let blob = await getBlobFromCOS(chunk.hash);
     if (blob) {
       console.log(`COS Loader: ${chunk.fileName} found in COS`);
@@ -88,35 +88,34 @@
       }
     }
 
-    // Convert blob to Data URL
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.readAsDataURL(blob);
-    });
+    // Convert blob to Blob URL
+    // Blob URLs are synchronous and share the page origin,
+    // which helps with module resolution in complex graphs.
+    return URL.createObjectURL(blob);
   }
 
   // Initialize
   try {
     console.log('COS Loader: Starting app...');
 
-    // Resolve all chunks to Data URLs
+    // Resolve all chunks to Blob URLs
     const importMap = { imports: {} };
 
-    // Set up unmanaged dependencies correctly so Data URLs can resolve them.
+    // Set up unmanaged dependencies correctly so Blob URLs can resolve them.
     for (const fileName of manifest.unmanaged || []) {
       const bareSpecifier = `coschunk-${fileName.replace(/\//g, '-')}`;
-      importMap.imports[bareSpecifier] = window.location.origin + base + fileName;
+      importMap.imports[bareSpecifier] =
+        window.location.origin + base + fileName;
     }
 
     console.log(`COS Loader: Loading ${chunksToLoad.length} chunks...`);
     const loadPromises = chunksToLoad.map(async (chunk) => {
-      const dataUrl = await getChunkDataUrl(chunk);
-      if (dataUrl) {
+      const blobUrl = await getChunkBlobUrl(chunk);
+      if (blobUrl) {
         // Use a hyphenated prefix and replace all slashes to ensure it's treated
         // as a truly bare specifier, bypassing hierarchical/protocol checks.
         const bareSpecifier = `coschunk-${chunk.fileName.replace(/\//g, '-')}`;
-        importMap.imports[bareSpecifier] = dataUrl;
+        importMap.imports[bareSpecifier] = blobUrl;
       }
     });
 
@@ -130,11 +129,19 @@
 
     console.log('COS Loader: Import Map injected');
 
-    // Import the main entry.
-    const entryUrl = `${base}${mainEntry}`;
-    await import(entryUrl);
+    // Import the main entry via its bare specifier to ensure it resolves
+    // through the import map and can find other managed chunks.
+    const entrySpecifier = `coschunk-${mainEntry.replace(/\//g, '-')}`;
+
+    // Small delay to ensure the browser has fully registered the
+    // import map before resolving the first module.
+    setTimeout(() => {
+      import(entrySpecifier).catch((err) => {
+        console.error('COS Loader: Failed to start app', err);
+      });
+    }, 0);
   } catch (err) {
-    console.error('COS Loader: Failed to start app', err);
+    console.error('COS Loader: Initialization failed', err);
   }
 })();
 </script>
